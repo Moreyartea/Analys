@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crypto Trend Spotter (CoinGecko)</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        /* Styling Dark Mode Professional */
+        body { background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', sans-serif; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .status-badge { background: #065f46; color: #34d399; padding: 5px 12px; border-radius: 20px; font-size: 0.8rem; }
+
+        /* Panel Kontrol */
+        .controls { background: #1e293b; padding: 20px; border-radius: 12px; margin-bottom: 20px; display: flex; gap: 15px; align-items: center; border: 1px solid #334155; }
+        select, button { padding: 10px 15px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: white; cursor: pointer; }
+        button { background-color: #2563eb; border-color: #2563eb; font-weight: 600; }
+        button:hover { background-color: #1d4ed8; }
+        
+        /* Grid Layout */
+        .charts-grid { display: grid; grid-template-columns: 1fr; gap: 20px; }
+        .chart-card { background: #1e293b; padding: 20px; border-radius: 12px; border: 1px solid #334155; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        
+        h2 { margin-top: 0; font-size: 0.9rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; }
+        .value-display { font-size: 2.5rem; font-weight: bold; margin: 10px 0; }
+        .sub-text { font-size: 0.9rem; opacity: 0.8; }
+        
+        /* Warna Indikator */
+        .bullish { color: #34d399; } /* Hijau */
+        .bearish { color: #f87171; } /* Merah */
+        .neutral { color: #94a3b8; } /* Abu */
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <h1>Crypto Trend Spotter</h1>
+        <span class="status-badge">● API Source: CoinGecko</span>
+    </div>
+
+    <div class="controls">
+        <div>
+            <label style="font-size: 0.8rem; color: #94a3b8; display:block; margin-bottom:4px">Aset Kripto</label>
+            <select id="coinId">
+                <option value="bitcoin">Bitcoin (BTC)</option>
+                <option value="ethereum">Ethereum (ETH)</option>
+                <option value="solana">Solana (SOL)</option>
+            </select>
+        </div>
+        <div>
+            <label style="font-size: 0.8rem; color: #94a3b8; display:block; margin-bottom:4px">Metode Diferensiasi</label>
+            <select id="diffMethod">
+                <option value="central">Central Difference (Recommended)</option>
+                <option value="backward">Backward Difference</option>
+            </select>
+        </div>
+        <div style="display: flex; align-items: center; margin-top: 18px;">
+            <input type="checkbox" id="useSmoothing" style="margin-right: 8px;"> 
+            <label for="useSmoothing">Smoothing (SMA)</label>
+        </div>
+        <div style="margin-left: auto; margin-top: 18px;">
+            <button onclick="fetchAndCalculate()">Analisis Sekarang</button>
+        </div>
+    </div>
+
+    <div class="charts-grid">
+        <div class="chart-card">
+            <h2>Grafik Harga (Historical Price)</h2>
+            <canvas id="priceChart" height="100"></canvas>
+            <p style="font-size: 0.8rem; color: #64748b; margin-top: 10px;">*Data OHLC 24 Jam terakhir (Interval ~30 menit untuk CoinGecko Free)</p>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px;">
+            <div class="chart-card">
+                <h2>Turunan 1 (Velocity)</h2>
+                <div id="v-value" class="value-display">--</div>
+                <div id="v-desc" class="sub-text">Menunggu data...</div>
+            </div>
+            <div class="chart-card">
+                <h2>Turunan 2 (Acceleration)</h2>
+                <div id="a-value" class="value-display">--</div>
+                <div id="a-desc" class="sub-text">Menunggu data...</div>
+            </div>
+            <div class="chart-card">
+                <h2>Kesimpulan Tren</h2>
+                <div id="trend-value" class="value-display" style="font-size: 1.8rem;">--</div>
+                <div class="progress-bar" style="height: 6px; background: #334155; border-radius: 3px; margin-top: 15px;">
+                    <div id="confidence-bar" style="width: 0%; height: 100%; background: #34d399; border-radius: 3px; transition: width 1s;"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="chart-card">
+            <h2>Grafik Turunan Pertama (f') & Kedua (f'')</h2>
+            <canvas id="derivativeChart" height="100"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+    let priceChartInstance = null;
+    let derivativeChartInstance = null;
+
+    // --- 1. FETCH DATA DARI COINGECKO ---
+    async function getCoinGeckoData() {
+        const coinId = document.getElementById('coinId').value;
+        // Mengambil data OHLC (Open, High, Low, Close) untuk 1 hari terakhir
+        // CoinGecko Free: returns data setiap 30 menit
+        const url = `https://api.coingecko.com/api/v3/coins/${coinId}/ohlc?vs_currency=usd&days=1`;
+        
+        try {
+            const response = await fetch(url);
+            if (!response.ok) throw new Error("Gagal mengambil data (Rate Limit?)");
+            
+            const rawData = await response.json();
+            
+            // Format data CoinGecko: [ [time, open, high, low, close], ... ]
+            return rawData.map(d => ({
+                time: new Date(d[0]).toLocaleTimeString('id-ID', {hour: '2-digit', minute:'2-digit'}),
+                price: d[4] // Index 4 adalah Close Price
+            }));
+        } catch (error) {
+            alert("Error: " + error.message + "\nCoinGecko membatasi request. Tunggu sebentar lalu coba lagi.");
+            return [];
+        }
+    }
+
+    // --- 2. SMOOTHING (SMA) ---
+    function applySmoothing(data, windowSize = 3) {
+        if (data.length < windowSize) return data;
+        let smoothedData = [];
+        for (let i = 0; i < data.length; i++) {
+            if (i < windowSize - 1) {
+                smoothedData.push(data[i]);
+            } else {
+                let sum = 0;
+                for (let j = 0; j < windowSize; j++) sum += data[i - j].price;
+                smoothedData.push({ time: data[i].time, price: sum / windowSize });
+            }
+        }
+        return smoothedData;
+    }
+
+    // --- 3. KALKULUS LOGIC (OTAKNYA) ---
+    function calculateCalculus(data, method) {
+    let results = [];
+    const dt = 1;
+
+    for (let i = 0; i < data.length; i++) {
+        let velocity = 0;
+        let acceleration = 0;
+        let currentPrice = data[i].price;
+        
+        // Pengecekan ketersediaan data
+        let hasPrev = i > 0;
+        let hasNext = i < data.length - 1;
+        let hasPrev2 = i > 1; // Butuh data i-2 untuk backward acceleration
+
+        // --- 1. TURUNAN PERTAMA (VELOCITY) ---
+        if (method === 'central' && hasPrev && hasNext) {
+            // Central Difference
+            velocity = (data[i+1].price - data[i-1].price) / (2 * dt);
+        } else if (hasPrev) { 
+            // Backward Difference (Fallback untuk data terakhir)
+            velocity = (currentPrice - data[i-1].price) / dt;
+        }
+
+        // --- 2. TURUNAN KEDUA (ACCELERATION) ---
+        if (hasPrev && hasNext) {
+            // Central Difference (Akurasi terbaik untuk data historis)
+            acceleration = (data[i+1].price - (2 * currentPrice) + data[i-1].price) / (dt * dt);
+        } else if (!hasNext && hasPrev2) {
+            // [FIX] Backward Difference Khusus Data Terakhir
+            // Rumus: f''(x) = (f(x) - 2f(x-1) + f(x-2)) / dt^2
+            acceleration = (currentPrice - (2 * data[i-1].price) + data[i-2].price) / (dt * dt);
+        }
+
+        results.push({ ...data[i], velocity, acceleration });
+    }
+    return results;
+}
+
+    // --- 4. RENDER UTAMA ---
+    async function fetchAndCalculate() {
+        let data = await getCoinGeckoData();
+        if (data.length === 0) return;
+
+        // Cek Smoothing
+        if (document.getElementById('useSmoothing').checked) {
+            data = applySmoothing(data);
+        }
+
+        // Hitung
+        const method = document.getElementById('diffMethod').value;
+        const finalData = calculateCalculus(data, method);
+        
+        // Update UI
+        updateCards(finalData);
+        renderCharts(finalData);
+    }
+
+    function updateCards(data) {
+        const last = data[data.length - 1]; // Ambil data terbaru
+        
+        // 1. Velocity Display
+        const vEl = document.getElementById('v-value');
+        vEl.innerText = (last.velocity > 0 ? "+" : "") + last.velocity.toFixed(2);
+        vEl.className = 'value-display ' + (last.velocity >= 0 ? 'bullish' : 'bearish');
+        document.getElementById('v-desc').innerText = last.velocity >= 0 ? "Harga Sedang Naik" : "Harga Sedang Turun";
+
+        // 2. Acceleration Display
+        const aEl = document.getElementById('a-value');
+        aEl.innerText = last.acceleration.toFixed(2);
+        aEl.className = 'value-display ' + (last.acceleration >= 0 ? 'bullish' : 'bearish');
+        
+        let momentumText = "";
+        if (last.velocity > 0 && last.acceleration > 0) momentumText = "Momentum Menguat 🚀";
+        else if (last.velocity > 0 && last.acceleration < 0) momentumText = "Kenaikan Melambat (Jenuh) ⚠️";
+        else if (last.velocity < 0 && last.acceleration < 0) momentumText = "Jatuh Semakin Cepat 🔻";
+        else momentumText = "Penurunan Melambat (Reversal?) 🔄";
+        document.getElementById('a-desc').innerText = momentumText;
+
+        // 3. Kesimpulan Tren
+        const trendEl = document.getElementById('trend-value');
+        const barEl = document.getElementById('confidence-bar');
+        
+        if (last.velocity > 0) {
+            trendEl.innerText = "BULLISH";
+            trendEl.className = "value-display bullish";
+            barEl.style.backgroundColor = "#34d399";
+        } else {
+            trendEl.innerText = "BEARISH";
+            trendEl.className = "value-display bearish";
+            barEl.style.backgroundColor = "#f87171";
+        }
+        // Simulasi confidence berdasarkan kekuatan percepatan
+        barEl.style.width = Math.min(Math.abs(last.acceleration) * 50, 100) + "%";
+    }
+
+    function renderCharts(dataset) {
+        const ctxPrice = document.getElementById('priceChart').getContext('2d');
+        const ctxDiff = document.getElementById('derivativeChart').getContext('2d');
+        
+        const labels = dataset.map(d => d.time);
+
+        // Chart Harga
+        if (priceChartInstance) priceChartInstance.destroy();
+        priceChartInstance = new Chart(ctxPrice, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Price (USD)',
+                    data: dataset.map(d => d.price),
+                    borderColor: '#3b82f6',
+                    borderWidth: 2,
+                    pointRadius: 0, // Hilangkan titik agar bersih
+                    tension: 0.3
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: { x: { display: false }, y: { grid: { color: '#334155' } } }
+            }
+        });
+
+        // Chart Turunan
+        if (derivativeChartInstance) derivativeChartInstance.destroy();
+        derivativeChartInstance = new Chart(ctxDiff, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: "Velocity (f')",
+                        data: dataset.map(d => d.velocity),
+                        borderColor: '#10b981',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        tension: 0.3,
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: "Acceleration (f'')",
+                        data: dataset.map(d => d.acceleration),
+                        borderColor: '#a855f7',
+                        borderWidth: 2,
+                        borderDash: [4, 4],
+                        pointRadius: 0,
+                        tension: 0.3,
+                        yAxisID: 'y1'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: { ticks: { maxTicksLimit: 8, color: '#94a3b8' }, grid: { display: false } },
+                    y: { position: 'left', grid: { color: '#334155' }, title: {display:true, text:'Kecepatan', color:'#94a3b8'} },
+                    y1: { position: 'right', grid: { display: false }, title: {display:true, text:'Percepatan', color:'#94a3b8'} }
+                }
+            }
+        });
+    }
+
+    // Jalankan otomatis saat load
+    fetchAndCalculate();
+</script>
+
+</body>
+</html>
